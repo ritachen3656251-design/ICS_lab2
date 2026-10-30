@@ -1,0 +1,529 @@
+\documentclass[UTF8,a4paper,zihao=-4,fontset=none]{ctexart}
+% 编译：在本文件所在目录运行 xelatex report.tex 两次。
+% 正文与图片均使用相对路径；图片位于 assets/report/。
+\usepackage[left=2.1cm,right=2.1cm,top=1.8cm,bottom=2.0cm]{geometry}
+\usepackage{amsmath,amssymb,array,booktabs,tabularx,longtable}
+\usepackage{graphicx,float,listings,xcolor,fancyhdr,hyperref,enumitem,needspace}
+\setCJKmainfont[Script=Latin,BoldFont=FandolSong-Bold.otf,ItalicFont=FandolKai-Regular.otf]{FandolSong-Regular.otf}
+\setCJKsansfont[Script=Latin,BoldFont=FandolHei-Bold.otf]{FandolHei-Regular.otf}
+\setCJKmonofont[Script=Latin]{FandolFang-Regular.otf}
+\setmainfont{Latin Modern Roman}
+\setmonofont{Latin Modern Mono}[Scale=0.92]
+\linespread{1.16}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{3pt}
+\setlength{\emergencystretch}{2em}
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[L]{\small Lab 2：BombLab}
+\fancyfoot[R]{\small 第 \thepage 页}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+\ctexset{
+  section={name={,、},number=\chinese{section},format=\centering\bfseries\large,
+    beforeskip=1.1\baselineskip,afterskip=.6\baselineskip},
+  subsection={number=\arabic{section}.\arabic{subsection},
+    format=\bfseries\normalsize,beforeskip=.8\baselineskip,afterskip=.3\baselineskip}
+}
+\hypersetup{hidelinks,pdftitle={Lab 2 BombLab 实验报告},pdfauthor={陈璋睿}}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  columns=fullflexible,keepspaces=true,showstringspaces=false,
+  breaklines=true,tabsize=4,
+  backgroundcolor=\color{black!3},frame=single,rulecolor=\color{black!18},
+  framesep=5pt,aboveskip=7pt,belowskip=7pt
+}
+\setlist{nosep,leftmargin=2em}
+\renewcommand{\arraystretch}{1.2}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\stage}[1]{\par\smallskip\noindent\textbf{#1}\par}
+\newcommand{\resultfig}[3]{%
+  \begin{figure}[H]\centering
+  \includegraphics[width=.96\linewidth]{#1}
+  \caption{#2}\label{#3}
+  \end{figure}}
+\begin{document}
+
+\begin{center}
+  {\LARGE\bfseries 计算机系统基础实验报告\par}
+  \vspace{.4em}
+  {\Large Lab 2：BombLab\par}
+\end{center}
+\vspace{.6em}
+\noindent 姓名：陈璋睿\quad 学号：23300160006
+\hfill 2026 年 10 月 30 日
+
+\section{实验目的与任务}
+
+本次实验通过反汇编和 GDB 分析个人二进制炸弹，练习函数调用、循环、分支、递归、结构体与函数指针的阅读方法。任务是在 \code{defuser.c} 中，根据每次输入的 64 位 \code{challenge} 计算口令，并完成六个正式关卡和 Honor。
+
+实验文档\cite{lab}要求恢复随输入变化的计算关系。本报告按“提出猜测、观察中间值、修正解释、换输入验证”的顺序整理调试过程。过程记录保存在父目录 \code{try.md}；正文选取影响解法的关键指令和实际试验。
+
+\section{实验环境与分析方法}
+
+\subsection{实验环境}
+
+\noindent\begin{tabularx}{\linewidth}{|l|X|}\hline
+项目 & 实际环境\\\hline
+系统与架构 & Ubuntu 22.04.4 LTS，Docker，Linux x86-64\\\hline
+编译器 & GCC 11.4.0，C11，\code{-O2 -Wall -Wextra -Wpedantic -Werror}\\\hline
+调试与反汇编 & GDB 12.1，GNU binutils 2.38\\\hline
+测试与版本管理 & Python 3.10.13，Git 2.34.1\\\hline
+个人仓库 & \url{https://github.com/ritachen3656251-design/ICS_lab2}\\\hline
+\end{tabularx}
+
+\subsection{从一次运行到通用计算}
+
+分析时先固定 seed 42，使用占位口令观察比较位置，再用 seed 43 核对关系。seed 43 位于公开列表之外。GDB 中常用 \code{break *phase_02}、\code{ni}、\code{finish}、\code{p/u} 和 \code{x}，其中反汇编与内存读取方法参考 GDB 文档\cite{gdbcode,gdbmem}。
+
+本包中第一参数 \code{rdi} 通常指向口令字符串，第二参数 \code{rsi} 保存 challenge。进入下一次函数调用时，再按该次调用重新判断参数。32 位结果用 \code{uint32_t} 表达，加、减、乘按模 \(2^{32}\) 回绕。
+
+\clearpage
+\section{正式关卡的分析与尝试}
+
+\subsection{第 1 关：跟随 helper 的参数和返回值}
+
+\stage{初步判断与占位尝试}
+\code{phase_01} 把 1 传给 \code{valid_u32_fields}，\code{sscanf} 后也比较返回值是否为 1，因此口令包含一个整数。先输入 \code{0}，程序输出 \code{BOOM!!!}。随后在 \code{p1_compute} 入口设断点，seed 42 的 challenge 为 \code{0x28efe333b266f103}；执行 \code{finish} 后，\code{eax} 为 1515805119。
+
+\stage{核对调用顺序}
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+p1_compute:
+    shr $0x20,%rax
+    shr $0x10,%rdx
+    call p1_step2
+    ...
+    call p1_step0
+    ...
+    call p1_step1
+\end{lstlisting}
+\end{minipage}\par
+三个 helper 的实际调用次序是 step2、step0、step1。先从 challenge 得到三个 32 位量：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+low = (uint32_t)challenge;
+high = (uint32_t)(challenge >> 32);
+middle = (uint32_t)(challenge >> 16);
+\end{lstlisting}
+\end{minipage}\par
+再根据各次调用前的参数寄存器恢复出：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+a = (5u * high) ^ (low + 0xb15eu);
+b = (5u * low + middle) ^ 0x1db3u;
+answer = (b + 4u * a) ^ 0xe881u;
+\end{lstlisting}
+\end{minipage}\par
+这里的 middle 是右移后截取的 32 位，包含原 challenge 的第 16 至 47 位。逐次标出参数后，三个函数的关系才清楚；只看 helper 名称很容易把先后顺序写反。
+
+\stage{实现与换 seed 验证}
+将结果交给 \code{write_answer} 输出。公开测试为 10/10；seed 43 得到 2034676901，实际运行结果见图\ref{fig:p1}。进一步测试覆盖了全零、全一、上下半字和固定随机 challenge。
+\resultfig{assets/report/phase1_seed43.png}{第 1 关，seed 43 的实际终端输出渲染}{fig:p1}
+
+\subsection{第 2 关：从首项开始，逐轮恢复数组}
+
+\stage{第一次：六个零为什么失败}
+格式检查和 \code{sscanf} 都要求六个整数，栈上六项从 \code{rbp-0x40} 开始，每项占 4 字节。先输入六个零，在 \code{0x40216a} 的比较处观察到：\code{esi=0}，\code{eax=14}。这说明程序已经读完输入，失败发生在首项比较。
+
+首项比较前只有三步：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+shr $0xa,%rax
+and $0x1f,%eax
+add $0x7,%eax
+\end{lstlisting}
+\end{minipage}\par
+右移 10 位后保留低 5 位，再加 7，得到
+\code{values[0]=((challenge>>10)&31)+7}。seed 42 的首项为 14，seed 43 为 29。只补上首项后，程序能到达循环入口，随后在第二项失败。
+
+\stage{第二次：只观察第一轮}
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+lea 0x7(%rdx),%ecx
+shr %cl,%rax
+and $0xf,%eax
+add %edx,%eax
+xor %esi,%eax
+mov -0x40(%rbp,%rdx,4),%esi
+lea (%rax,%rax,2),%eax
+cmp %eax,%esi
+\end{lstlisting}
+\end{minipage}\par
+第一轮 \code{edx=1}，移位量为 8。一个容易读乱的地方是 \code{esi}：执行 \code{xor} 时它保存前一项，后面的 \code{mov} 才把当前输入装进来。\code{lea} 中的比例寻址在这里计算三倍。
+
+为核对运算符，设置“把异或读成加法”的对照。seed 42 中 \(16\mathbin{\oplus}14=16+14=30\)，两种解释都会算出第二项 90；换 seed 43 后，两者分开了：
+\begin{center}\small
+\begin{tabular}{c|rrrr|rr}
+seed & 前项 & 片段 & 片段加 1 & 异或结果 & 正确第二项 & 加法对照\\\hline
+42 & 14 & 15 & 16 & 30 & 90 & 90\\
+43 & 29 & 8 & 9 & 20 & 60 & 114
+\end{tabular}
+\end{center}
+输入 \code{29 114 0 0 0 0} 时，GDB 显示期望为 60、实际输入为 114；改成 \code{29 60 0 0 0 0} 后，程序进入下一轮。这个对照是分析时特意设置的错误版本。
+
+\stage{第三次：再看第二轮，推广循环}
+seed 42 在 \code{i=2} 时，前项已经变成 90；移位量为 9，取到片段 15，计算
+\[
+(15+2)\mathbin{\oplus}90=75,\qquad 3\times75=225.
+\]
+于是恢复出：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+values[0] = (uint32_t)((challenge >> 10) & 31u) + 7u;
+for (unsigned i = 1; i < 6; ++i) {
+    uint32_t part = (uint32_t)((challenge >> (i + 7)) & 15u);
+    values[i] = (values[i - 1] ^ (part + i)) * 3u;
+}
+\end{lstlisting}
+\end{minipage}\par
+循环处理下标 1 至 5，首项加上五次递推恰好得到六项。各轮取出的 4 位片段存在重叠。seed 42 的完整口令为 \code{14 90 225 705 2130 6420}；seed 43 得到图\ref{fig:p2}中的结果。公开测试为 10/10。
+\resultfig{assets/report/phase2_seed43.png}{第 2 关，seed 43 的实际终端输出渲染}{fig:p2}
+
+\subsection{第 3 关：索引和 helper 编号的区别}
+
+\stage{先确定两项输入}
+\code{phase_03} 读两个整数，第一项与 \code{challenge&7} 比较。第二项由下面的参数调用 dispatcher 后得到：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+shr $0x3,%rax
+shr $0x20,%rsi
+xor %eax,%esi
+call p3_dispatch
+\end{lstlisting}
+\end{minipage}\par
+令 \code{index=challenge&7}，
+\code{x=(uint32_t)(challenge>>3) ^ (uint32_t)(challenge>>32)}。
+
+\stage{读取跳转表并做对照}
+dispatcher 中的关键指令是：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+cmp $0x7,%eax
+ja  <out_of_range>
+notrack jmp *0x405820(,%rax,8)
+\end{lstlisting}
+\end{minipage}\par
+用 \code{x/8gx 0x405820} 读取八项地址，再跟到各地址的跳转目标。表的实际顺序为 case6、case7、case2、case0、case1、case5、case3、case4。
+
+用 challenge 0 检验“索引 0 对应 case0”的解释：它会给出 \code{0 19859}，实际运行失败。GDB 中 dispatcher 返回 34764，按表映射得到的 \code{0 34764} 则通过。函数编号和输入索引在这份炸弹中有一层映射。
+
+\stage{恢复八个分支}
+\begin{center}\small
+\begin{tabular}{ccl}
+索引 & 目标 & 第二项的计算\\\hline
+0 & case6 & \code{(x ^ 0x87ccu) + (x >> 2)}\\
+1 & case7 & \code{5u * x + 0x49160u}\\
+2 & case2 & \code{5u * x + 0x9a24u}\\
+3 & case0 & \code{(x ^ 0x4d93u) + (x >> 2)}\\
+4 & case1 & \code{5u * x + 0xb829u}\\
+5 & case5 & \code{3u * x + 0xfe6au}\\
+6 & case3 & \code{(4u * x) ^ 0x833du}\\
+7 & case4 & \code{(2u * x) ^ 0x1105u}
+\end{tabular}
+\end{center}
+实现保留了八个显式 \code{case}，便于和表逐项对应。公开测试为 10/10，另用八种索引及带高位数据的样本核对了各分支。seed 43 的口令为 \code{7 3149956987}。
+\resultfig{assets/report/phase3_seed43.png}{第 3 关，seed 43 的实际终端输出渲染}{fig:p3}
+
+\subsection{第 4 关：从基本情况到递归回溯}
+
+\stage{第一次：先让目标恰好等于中点}
+本关读一个整数。\code{p4_walk} 的参数为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+target = challenge & 127;
+low = 0; high = 127;
+salt = (uint32_t)(challenge >> 7) ^ (uint32_t)(challenge >> 32);
+\end{lstlisting}
+\end{minipage}\par
+取 challenge 63，目标正好等于首次中点，salt 为 0。先输入目标值 63，结果失败；在函数入口执行 \code{finish} 后，\code{eax=311}，对应汇编：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+lea 0xf8(%rdi),%eax
+xor %ecx,%eax
+ret
+\end{lstlisting}
+\end{minipage}\par
+因此基本情况返回 \code{(mid+248)^salt}。补成 311 后，这个样本通过。
+
+\stage{第二次：只走一次左分支}
+取 challenge 31，调用区间依次为 \([0,127]\)、\([0,62]\)。子调用命中中点，第一次 \code{finish} 看到返回 279；回到父调用再执行 \code{finish}，结果为 886。父调用返回前的指令为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+call p4_walk
+lea (%rax,%rax,2),%eax
+xor %ebx,%eax
+...
+xor $0xc,%eax
+\end{lstlisting}
+\end{minipage}\par
+其中 \code{ebx=mid+salt}。右分支的最后一个常量是 \code{0xa}。这说明递归的路径影响回溯时的加工过程。
+
+\stage{递归关系与验证}
+令 \(m=l+\lfloor(h-l)/2\rfloor\)，则返回关系可写为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+if (target == mid)
+    return (mid + 248u) ^ salt;
+if (target < mid) {
+    value = phase4_walk(target, low, mid - 1u, salt);
+    return (3u * value) ^ (mid + salt) ^ 12u;
+}
+value = phase4_walk(target, mid + 1u, high, salt);
+return (3u * value) ^ (mid + salt) ^ 10u;
+\end{lstlisting}
+\end{minipage}\par
+实现保持递归形式，与 GDB 调用栈对应。目标范围为 0 至 127，测试额外覆盖全部 128 种目标；公开测试为 10/10。seed 43 返回 3949797497。
+\resultfig{assets/report/phase4_seed43.png}{第 4 关，seed 43 的实际终端输出渲染}{fig:p4}
+
+\subsection{第 5 关：先处理头节点，再沿 next 遍历}
+
+\stage{第一次读取时的宽度问题}
+本关读两个整数，\code{p5_traverse} 通过 \code{eax} 返回第一项，通过第二个指针参数写回另一项。读取起点表时，开始用了 \code{x/8uw}，输出中出现了指针低半部和一串零；回看索引比例 \code{8}，才发现这只读了四个 64 位指针。改成 \code{x/8gx} 后，完整八项起点对应节点下标
+\[
+5,\ 8,\ 3,\ 1,\ 9,\ 11,\ 0,\ 7.
+\]
+
+\stage{由访问偏移恢复布局}
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+mov 0x405b60(,%rax,8),%rdx
+mov 0x8(%rdx),%esi
+add 0xc(%rdx),%eax
+...
+mov (%rdx),%rdx
+\end{lstlisting}
+\end{minipage}\par
+节点的 +0 处是 8 字节 next 指针，+8 是 4 字节 id，+12 是 4 字节 bias，每个节点共 16 字节。按 next 指针得到的完整链为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+5 -> 8 -> 3 -> 1 -> 9 -> 11 -> 0 -> 7 -> 10 -> 2 -> 6 -> 4 -> NULL
+\end{lstlisting}
+\end{minipage}\par
+静态节点的存储顺序和遍历顺序由此区分开来。
+
+\stage{第二次：用两个相邻 challenge 核对处理次数}
+challenge 0 选中起点 nodes[5]，额外跳转数为 0。观察到节点字段为 id=1049、bias=5848，函数仍先处理它，得到 \code{95042 1049}。
+将 challenge 改为 8，起点相同、额外跳转数变成 1。沿用原答案会失败；单步执行 \lstinline|mov (%rdx),%rdx| 后，指针进入 nodes[8]，字段为 id=55、bias=37381，最终得到 \code{322556 55}。额外跳转数和总处理数相差一轮。
+
+\stage{恢复遍历关系}
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+value = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32);
+value ^= 0x7581u;
+count = ((challenge >> 3) & 3u) + 1u;
+for (unsigned i = 0; i < count; ++i) {
+    value = (3u * value + node->bias) ^ node->id;
+    last = node->id;
+    node = node->next;
+}
+\end{lstlisting}
+\end{minipage}\par
+输出为累计值和最后处理节点的 id。代码中的静态节点表来自本包数据，运行时仍依据 challenge 选择起点和长度。公开测试为 10/10，另覆盖八个起点与四种长度的全部组合。seed 43 的结果见图\ref{fig:p5}。
+\resultfig{assets/report/phase5_seed43.png}{第 5 关，seed 43 的实际终端输出渲染}{fig:p5}
+
+\subsection{第 6 关：两次间接调用之间的数据传递}
+
+\stage{先纠正输入数量和表长}
+沿用上一关的 \code{0 0} 试探输入时，程序还没到 \code{p6_dispatch} 就失败。回看入口，格式检查要求一个整数。改为 \code{0} 后，能停在 dispatcher 的第一次调用处。
+
+另一个起初读少的地方是函数表：虽然只有六个不同的 op 函数，索引却取三位，表中实际有八项。用 \code{x/8gx 0x405e00} 读到的顺序为
+\code{op1, op5, op4, op0, op4, op3, op2, op3}。
+
+\stage{区分循环移位与普通右移}
+取 challenge 67，第一次索引为 3，参数为 1，间接调用落到 \code{p6_op_0}。执行 \code{finish} 得到 \code{0x80000000}，由此核对 \code{ror} 把低位补回到高位。六个操作恢复如下：
+\begin{center}\small
+\begin{tabular}{cl}
+函数 & 32 位计算关系\\\hline
+op0 & \code{(x >> 1) | (x << 31)}\\
+op1 & \code{(2u*x + 0xc3ecu) ^ (7u*x)}\\
+op2 & \code{(x ^ (x >> 7)) + 0xe4a9u}\\
+op3 & \code{(x + 0xca25u) ^ (x >> 2)}\\
+op4 & \code{((x << 2) | (x >> 30)) ^ 0x62e5u}\\
+op5 & \code{(x ^ 0xf6bcu) + (x << 7)}
+\end{tabular}
+\end{center}
+
+\stage{再跟第二次调用}
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+call *0x405e00(,%rax,8)
+xor $0x8322,%eax
+mov %eax,%edi
+call *0x405e00(%rbx)
+add $0x671c,%eax
+\end{lstlisting}
+\end{minipage}\par
+challenge 0 的第一返回值是 50156，直接输入它会失败。继续观察，第二函数接收 \code{0x40ce}，返回 32810；最后再加 \code{0x671c}，得到 59206。因此完整顺序为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+x = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32);
+x = ops[challenge & 7u](x);
+x ^= 0x8322u;
+x = ops[(challenge >> 3) & 7u](x);
+answer = x + 0x671cu;
+\end{lstlisting}
+\end{minipage}\par
+实现使用六个小函数和八项函数指针表。公开测试为 10/10，额外覆盖八乘八索引组合及高低位旋转样本。seed 43 输出 591440785。
+\resultfig{assets/report/phase6_seed43.png}{第 6 关，seed 43 的实际终端输出渲染}{fig:p6}
+
+\clearpage
+\section{Honor：从字符串布局到三个整数}
+
+\subsection{先进入 secret\_gate，再确定标志位置}
+
+把六关正确口令作为前缀，再附加一行 \code{test}，可以停在 \code{secret_gate}。seed 42 下观察到：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+challenge = 0xccf635ee9e9e2fa4
+context   = 0x5d8b1809d64489a0
+\end{lstlisting}
+\end{minipage}\par
+此时函数返回 0。先从长度检查和三个栈地址看起：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+sub $0x24,%rax
+cmp $0x7f,%rax
+jbe <copy>
+...
+lea -0xd0(%rbp),%r12
+...
+cmpl $0x4e45504f,-0xb0(%rbp)
+lea -0xac(%rbp),%rdi
+call secret_phase
+\end{lstlisting}
+\end{minipage}\par
+\code{strlen-36} 的无符号比较给出长度区间 36 至 163。复制起点到标志位置相距 32 字节，标志到数字子串又相距 4 字节。小端内存中的 \code{0x4e45504f} 对应字符串 \code{OPEN}，布局为：
+\begin{center}
+\begin{tabular}{ccl}
+相对起点偏移 & 长度 & 内容\\\hline
+0--31 & 32 字节 & 填充字符 A\\
+32--35 & 4 字节 & OPEN\\
+36 起 & 随数字长度变化 & 三个无符号十进制整数
+\end{tabular}
+\end{center}
+
+用 31 个 A 加 \code{OPEN0 0 0} 做偏移对照，检查处读到 \code{0x304e4550}，即错位的 \code{PEN0}；换成 32 个 A 后，检查值成为 \code{0x4e45504f}，并进入 \code{secret_phase}，其 \code{rdi} 指向的内容恰为 \code{0 0 0}。这个试验把标志检查和数字检查分开了。
+
+\subsection{只修正第二个整数，再定位第三个}
+
+数字检查先将 \code{context&3} 与第一项比较。seed 42 对应 0，所以三个零已经能通过这一项。继续停在 \code{0x4026ec}，观察第二项比较。中间 helper 为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+secret_mix:
+    mov %edi,%eax
+    ror $0x5,%eax
+    xor $0xf159,%eax
+    ret
+\end{lstlisting}
+\end{minipage}\par
+将 challenge 与 context 分别按高低 32 位异或折叠为 \(a,b\)，令
+\(m=\mathrm{context}\mathbin{\&}3\)，得到：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+mode = (uint32_t)(context & 3u);
+a = (uint32_t)challenge ^ (uint32_t)(challenge >> 32);
+b = (uint32_t)context ^ (uint32_t)(context >> 32);
+x = a ^ b;
+x = (x >> 5) | (x << 27);
+first = x ^ 0xf159u ^ (uint32_t)(context >> 16)
+        ^ (mode * 0x6a9eu);
+second = first ^ (b + mode + 0x9bc7u + (a >> 5));
+\end{lstlisting}
+\end{minipage}\par
+
+GDB 观察到 \(a=1382554186\)、\(b=2345636265\)，期望第二项为 113515330。先只填 \code{OPEN0 113515330 0}，程序继续失败；这次能到达第三项比较 \code{0x402700}，看到期望值 2292675840。补上后，seed 42 正常输出 \code{Secret phase defused.}。
+
+这里最容易漏读的是 \code{context>>16}：随后截为 32 位，使用的是原 context 的第 16 至 47 位。第二、三项的异或和求和也都按 32 位计算。
+
+\subsection{通用输出与换 seed 核对}
+
+最终将 32 个 A、\code{OPEN} 和三个动态整数拼成一行。seed 43 的 mode 为 1，生成的第七行为：
+\par\noindent\begin{minipage}{\linewidth}
+\begin{lstlisting}
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOPEN1 2319039455 4233664519
+\end{lstlisting}
+\end{minipage}\par
+图\ref{fig:honor}来自六关加 Honor 的一次完整运行。Honor 公开测试为 10/10；额外 20 个公开列表之外的 seed 全部通过，并覆盖 mode 0、1、2、3。
+\resultfig{assets/report/honor_seed43.png}{六关及 Honor，seed 43 的实际终端输出渲染}{fig:honor}
+
+\clearpage
+\section{测试结果与过程核对}
+
+\subsection{公开测试与列表外验证}
+
+本报告整理时重新运行 \code{python3 public_test.py}，六关为 60/60，Honor 为 10/10，见图\ref{fig:public}。各节的 seed 43 运行图对应同一份最终 \code{defuser.c}。
+\begin{center}\small
+\begin{tabular}{ccl}
+关卡 & 公开测试 & 额外覆盖的主要情况\\\hline
+1 & 10/10 & 全零、全一、上下半字及随机 challenge\\
+2 & 10/10 & 首项位段、逐轮移位、额外 seed\\
+3 & 10/10 & 八种索引和带高位数据的分支输入\\
+4 & 10/10 & 0 至 127 的全部目标、左右递归\\
+5 & 10/10 & 八个起点与四种处理长度\\
+6 & 10/10 & 八乘八函数索引、循环移位的补回位\\
+Honor & 10/10 & 额外 20 个 seed、四种 mode
+\end{tabular}
+\end{center}
+Honor 额外 seed 为 2、3、4、5、6、8、9、10、11、12、13、14、15、16、17、18、43、
+3141592653、9223372036854775808 和 18446744073709551614。这些输入均不在公开列表中，实际输出行长为 57 至 59 字符。
+\resultfig{assets/report/public_tests.png}{公开测试的统计行与 Honor 明细，实际终端输出渲染}{fig:public}
+图中的文字由实际执行命令的输出渲染；统计图保留了六关总数和 Honor 明细。各关的完整过程输出保存在父目录 \code{try.md}。
+
+\subsection{环境问题与复编方法}
+
+初次直接在 \code{/oss-ipec} 目录链接时，出现 \code{file truncated}。把同一份源码、编译器和选项改为向 \code{/tmp} 输出后，链接成功；完成的 ELF 文件顺序复制回 \code{BombLab/defuser} 后也能运行。结合 \code{df -T} 中 ossfs2 与 ext4 的差别，本次后续复编使用临时目录生成二进制的方式。
+
+此外，领取脚本最初遭遇 \code{ConnectionResetError}。现有代理下，curl 可以下载附件，随后通过原脚本的 \code{--file} 入口完成导入。这两类问题分别发生在构建和下载阶段，与口令公式的核对分开处理。
+
+\subsection{按关记录的提交}
+
+\begin{center}\small
+\begin{tabular}{cl}
+提交 & 对应内容\\\hline
+\code{0034180} & 第 1 关 helper 调用计算\\
+\code{de0df4a} & 第 2 关数组递推\\
+\code{09ce9eb} & 第 3 关跳转表分支\\
+\code{b965831} & 第 4 关递归回溯\\
+\code{0945dd7} & 第 5 关链表遍历\\
+\code{49baacd} & 第 6 关间接调用\\
+\code{b9596a8} & Honor 字符串与上下文计算
+\end{tabular}
+\end{center}
+
+\section{实验体会}
+
+第二关给我的印象最深。开始只看到一个错误结果时，很难判断是格式、首项还是循环出了问题。将它拆成“六个零、只补首项、只补第二项、再看下一轮”后，每次失败都对应了更具体的位置。seed 42 中加法与异或的结果碰巧相等，也让我体会到换输入核对中间值的作用。
+
+后面几关沿用这一做法：第三关先读实际跳转地址，第四关分开看子调用与父调用的返回，第五关沿指针而非数组顺序走，第六关跟清两次调用之间的参数，Honor 则先确认字符串布局再算整数。恢复公式时，把位宽、运算顺序和寄存器在当前指令处的含义写清楚，比直接照着某个样本值猜口令更有帮助。
+
+\section{参考资料}
+
+\begingroup
+\footnotesize
+\raggedright
+\renewcommand{\section}[2]{}
+\begin{thebibliography}{9}
+\setlength{\itemsep}{3pt}
+\bibitem{lab}
+课程实验文档：Lab2 BombLab。
+\url{https://ics-26fall-fdu.github.io/labs/lab2-bomb-lab/}，
+访问日期：2026 年 10 月 30 日。
+\bibitem{repo}
+实验仓库中的 \code{README.md}、\code{tutor/README.md}、
+\code{teaching/README.md}，以及公开测试的 seed 列表。
+\bibitem{gdbcode}
+GNU GDB Manual：Source and Machine Code。
+\url{https://sourceware.org/gdb/current/onlinedocs/gdb.html/Machine-Code.html}。
+\bibitem{gdbmem}
+GNU GDB Manual：Examining Memory。
+\url{https://sourceware.org/gdb/current/onlinedocs/gdb.html/Memory.html}。
+\end{thebibliography}
+\endgroup
+
+\section{AI 使用说明}
+% 按用户要求留空，供之后自行填写。
+\vspace*{1.7cm}
+
+\end{document}
