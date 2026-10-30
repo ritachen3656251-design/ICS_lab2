@@ -125,12 +125,45 @@ int solve_phase_5(uint64_t challenge, char *out, size_t cap) {
     return write_answer(out, cap, values, 2);
 }
 
+static uint32_t phase6_op0(uint32_t x) {
+    return (x >> 1) | (x << 31);
+}
+
+static uint32_t phase6_op1(uint32_t x) {
+    return (2u * x + 0xc3ecu) ^ (7u * x);
+}
+
+static uint32_t phase6_op2(uint32_t x) {
+    return (x ^ (x >> 7)) + 0xe4a9u;
+}
+
+static uint32_t phase6_op3(uint32_t x) {
+    return (x + 0xca25u) ^ (x >> 2);
+}
+
+static uint32_t phase6_op4(uint32_t x) {
+    return ((x << 2) | (x >> 30)) ^ 0x62e5u;
+}
+
+static uint32_t phase6_op5(uint32_t x) {
+    return (x ^ 0xf6bcu) + (x << 7);
+}
+
 int solve_phase_6(uint64_t challenge, char *out, size_t cap) {
+    static uint32_t (*const ops[8])(uint32_t) = {
+        phase6_op1, phase6_op5, phase6_op4, phase6_op0,
+        phase6_op4, phase6_op3, phase6_op2, phase6_op3
+    };
     uint32_t values[MAX_FIELDS] = {0};
-    size_t count = 0;
-    (void)challenge;
-    // TODO: 根据 phase_06 的汇编，用 challenge 算出口令中的各个整数，依次存入 values，并把 count 改为整数个数。
-    return write_answer(out, cap, values, count);
+    uint32_t x = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32);
+    unsigned first = (unsigned)(challenge & 7u);
+    unsigned second = (unsigned)((challenge >> 3) & 7u);
+
+    x = ops[first](x);
+    x ^= 0x8322u;
+    x = ops[second](x);
+    values[0] = x + 0x671cu;
+    return write_answer(out, cap, values, 1);
 }
 
 int solve_secret(uint64_t challenge, uint64_t context, char *out, size_t cap) {
