@@ -21,10 +21,14 @@ static int write_answer(char *out, size_t cap, const uint32_t *values, size_t co
 
 int solve_phase_1(uint64_t challenge, char *out, size_t cap) {
     uint32_t values[MAX_FIELDS] = {0};
-    size_t count = 0;
-    (void)challenge;
-    // TODO: 根据 phase_01 的汇编，用 challenge 算出口令中的各个整数，依次存入 values，并把 count 改为整数个数。
-    return write_answer(out, cap, values, count);
+    uint32_t low = (uint32_t)challenge;
+    uint32_t high = (uint32_t)(challenge >> 32);
+    uint32_t middle = (uint32_t)(challenge >> 16);
+    uint32_t a = (high * 5u) ^ (low + 0xb15eu);
+    uint32_t b = (low * 5u + middle) ^ 0x1db3u;
+
+    values[0] = (b + 4u * a) ^ 0xe881u;
+    return write_answer(out, cap, values, 1);
 }
 
 int solve_phase_2(uint64_t challenge, char *out, size_t cap) {
