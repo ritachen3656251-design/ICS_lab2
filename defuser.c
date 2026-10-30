@@ -61,12 +61,29 @@ int solve_phase_3(uint64_t challenge, char *out, size_t cap) {
     return write_answer(out, cap, values, 2);
 }
 
+static uint32_t phase4_walk(uint32_t target, uint32_t low,
+                            uint32_t high, uint32_t salt) {
+    uint32_t mid = low + (high - low) / 2u;
+    uint32_t value;
+
+    if (target == mid) {
+        return (mid + 248u) ^ salt;
+    }
+    if (target < mid) {
+        value = phase4_walk(target, low, mid - 1u, salt);
+        return (3u * value) ^ (mid + salt) ^ 12u;
+    }
+    value = phase4_walk(target, mid + 1u, high, salt);
+    return (3u * value) ^ (mid + salt) ^ 10u;
+}
+
 int solve_phase_4(uint64_t challenge, char *out, size_t cap) {
     uint32_t values[MAX_FIELDS] = {0};
-    size_t count = 0;
-    (void)challenge;
-    // TODO: 根据 phase_04 的汇编，用 challenge 算出口令中的各个整数，依次存入 values，并把 count 改为整数个数。
-    return write_answer(out, cap, values, count);
+    uint32_t target = (uint32_t)(challenge & 127u);
+    uint32_t salt = (uint32_t)(challenge >> 7) ^ (uint32_t)(challenge >> 32);
+
+    values[0] = phase4_walk(target, 0, 127, salt);
+    return write_answer(out, cap, values, 1);
 }
 
 int solve_phase_5(uint64_t challenge, char *out, size_t cap) {
