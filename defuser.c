@@ -167,11 +167,19 @@ int solve_phase_6(uint64_t challenge, char *out, size_t cap) {
 }
 
 int solve_secret(uint64_t challenge, uint64_t context, char *out, size_t cap) {
-    (void)challenge;
-    (void)context;
-    (void)out;
-    (void)cap;
-    // TODO（选做）: 根据 secret_gate、secret_copy 和 secret_phase 的汇编构造完整的第七行，写入 out 后返回 0。
-    // 第七行不一定只有整数，可以直接用 snprintf 写入；还没完成时保持返回 1，测试会显示 not attempted。
-    return 1;
+    static const char padding[] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    uint32_t mode = (uint32_t)(context & 3u);
+    uint32_t a = (uint32_t)challenge ^ (uint32_t)(challenge >> 32);
+    uint32_t b = (uint32_t)context ^ (uint32_t)(context >> 32);
+    uint32_t x = a ^ b;
+    uint32_t first;
+    uint32_t second;
+
+    x = (x >> 5) | (x << 27);
+    first = x ^ 0xf159u ^ (uint32_t)(context >> 16) ^ (mode * 0x6a9eu);
+    second = first ^ (b + mode + 0x9bc7u + (a >> 5));
+
+    int size = snprintf(out, cap, "%sOPEN%" PRIu32 " %" PRIu32 " %" PRIu32,
+                        padding, mode, first, second);
+    return size < 0 || (size_t)size >= cap;
 }
