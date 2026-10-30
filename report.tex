@@ -14,6 +14,8 @@
 \setlength{\parskip}{3pt}
 \setlength{\emergencystretch}{2em}
 \setlength{\headheight}{14pt}
+\widowpenalty=10000
+\clubpenalty=10000
 \pagestyle{fancy}
 \fancyhf{}
 \fancyfoot[L]{\small Lab 2：BombLab}
@@ -37,7 +39,6 @@
 \setlist{nosep,leftmargin=2em}
 \renewcommand{\arraystretch}{1.2}
 \newcommand{\code}[1]{\texttt{\detokenize{#1}}}
-\newcommand{\stage}[1]{\par\smallskip\noindent\textbf{#1}\par}
 \newcommand{\resultfig}[3]{%
   \begin{figure}[H]\centering
   \includegraphics[width=.96\linewidth]{#1}
@@ -54,53 +55,52 @@
 \noindent 姓名：陈璋睿\quad 学号：23300160006
 \hfill 2026 年 10 月 30 日
 
-\section{实验目的与任务}
 
-本次实验通过反汇编和 GDB 分析个人二进制炸弹，练习函数调用、循环、分支、递归、结构体与函数指针的阅读方法。任务是在 \code{defuser.c} 中，根据每次输入的 64 位 \code{challenge} 计算口令，并完成六个正式关卡和 Honor。
+\section{实验目的}
 
-实验文档\cite{lab}要求恢复随输入变化的计算关系。本报告按“提出猜测、观察中间值、修正解释、换输入验证”的顺序整理调试过程。过程记录保存在父目录 \code{try.md}；正文选取影响解法的关键指令和实际试验。
+BombLab 给出的是一个随输入变化的验证程序。一次运行中的比较值能够帮助解除当前关卡。但求解函数接收的是任意 \code{challenge}，实验因而需要恢复数值背后的计算关系。实验文档\cite{lab}对提交程序的要求也体现了这一点。
 
-\section{实验环境与分析方法}
+我最初面对的困难是怎样解释一次失败。相同的 \code{BOOM!!!} 可能出现在输入解析阶段，也可能出现在某个中间比较之后。如果只记录最终是否通过，就无法判断原先的理解错在何处。下面的分析围绕各关的主要疑点展开。试验用于区分不同解释，而对反馈的分析决定了后续解法。
 
-\subsection{实验环境}
+\section{实验环境}
 
 \noindent\begin{tabularx}{\linewidth}{|l|X|}\hline
 项目 & 实际环境\\\hline
-系统与架构 & Ubuntu 22.04.4 LTS，Docker，Linux x86-64\\\hline
-编译器 & GCC 11.4.0，C11，\code{-O2 -Wall -Wextra -Wpedantic -Werror}\\\hline
-调试与反汇编 & GDB 12.1，GNU binutils 2.38\\\hline
-测试与版本管理 & Python 3.10.13，Git 2.34.1\\\hline
+运行环境 & Ubuntu 22.04.4 LTS，Linux x86-64 Docker\\\hline
+编译器 & GCC 11.4.0，采用 C11\\\hline
+编译选项 & \code{-O2 -Wall -Wextra -Wpedantic -Werror}\\\hline
+调试工具 & GDB 12.1\\\hline
+反汇编工具 & GNU binutils 2.38\\\hline
+测试脚本环境 & Python 3.10.13\\\hline
 个人仓库 & \url{https://github.com/ritachen3656251-design/ICS_lab2}\\\hline
 \end{tabularx}
 
-\subsection{从一次运行到通用计算}
+关卡入口的 \code{rdi} 指向口令，\code{rsi} 保存 challenge。不过，这种含义只适用于入口处。执行过程中寄存器会被重新使用，分析一次调用时需要重新确认它的参数。GDB 的反汇编和内存查看方法参考文档\cite{gdbcode,gdbmem}。
 
-分析时先固定 seed 42，使用占位口令观察比较位置，再用 seed 43 核对关系。seed 43 位于公开列表之外。GDB 中常用 \code{break *phase_02}、\code{ni}、\code{finish}、\code{p/u} 和 \code{x}，其中反汇编与内存读取方法参考 GDB 文档\cite{gdbcode,gdbmem}。
-
-本包中第一参数 \code{rdi} 通常指向口令字符串，第二参数 \code{rsi} 保存 challenge。进入下一次函数调用时，再按该次调用重新判断参数。32 位结果用 \code{uint32_t} 表达，加、减、乘按模 \(2^{32}\) 回绕。
+本文用 \(\oplus\) 表示按位异或。公式中涉及 32 位寄存器的结果均按模 \(2^{32}\) 计算，对应代码里的 \code{uint32_t}。其中 $\operatorname{low}_{32}(x)$ 表示低 32 位，$\operatorname{high}_{32}(x)$ 表示高 32 位。分析时主要使用 seed 42，另用公开列表之外的 seed 43 检查恢复出的关系。
 
 \clearpage
-\section{正式关卡的分析与尝试}
+\section{关卡分析}
 
-\subsection{第 1 关：跟随 helper 的参数和返回值}
+\subsection{第 1 关：调用关系}
 
-\stage{初步判断与占位尝试}
-\code{phase_01} 把 1 传给 \code{valid_u32_fields}，\code{sscanf} 后也比较返回值是否为 1，因此口令包含一个整数。先输入 \code{0}，程序输出 \code{BOOM!!!}。随后在 \code{p1_compute} 入口设断点，seed 42 的 challenge 为 \code{0x28efe333b266f103}；执行 \code{finish} 后，\code{eax} 为 1515805119。
+本关的格式检查要求一个整数，随后将这个整数与 \code{p1_compute} 的返回值比较。输入 0 时程序失败，在该函数返回处可以看到程序确实算出了一个非零的期望值。这个结果能够解释当前输入为什么失败，但还没有解释数值与 challenge 的关系。我因而将分析重点放在返回值的来源上。
 
-\stage{核对调用顺序}
+\code{p1_compute} 中出现了三次 helper 调用。起初看函数名，很容易按编号理解它们的先后关系；实际调用却从 step2 开始。更重要的是，下一次调用的参数有一部分来自前一次返回值。如果只分别翻译三个 helper，就会丢失它们之间的数据依赖。
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
-p1_compute:
-    shr $0x20,%rax
-    shr $0x10,%rdx
-    call p1_step2
-    ...
-    call p1_step0
-    ...
-    call p1_step1
+call p1_step2
+...
+mov %eax,%ecx
+call p1_step0
+...
+mov %ecx,%esi
+mov %eax,%edi
+call p1_step1
 \end{lstlisting}
 \end{minipage}\par
-三个 helper 的实际调用次序是 step2、step0、step1。先从 challenge 得到三个 32 位量：
+
+为弄清这种依赖，我先把 challenge 在调用前形成的三个量记为：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 low = (uint32_t)challenge;
@@ -108,7 +108,9 @@ high = (uint32_t)(challenge >> 32);
 middle = (uint32_t)(challenge >> 16);
 \end{lstlisting}
 \end{minipage}\par
-再根据各次调用前的参数寄存器恢复出：
+其中 middle 的截取宽度值得单独注意。右移 16 位改变的是位段起点。随后写入 32 位寄存器的操作决定了保留宽度，因此 middle 包含原数的第 16 至 47 位。把它理解成一个 16 位字段，会丢掉仍参与计算的高半部分。
+
+再把每次调用的参数与 helper 内部运算对应，可以恢复出：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 a = (5u * high) ^ (low + 0xb15eu);
@@ -116,18 +118,16 @@ b = (5u * low + middle) ^ 0x1db3u;
 answer = (b + 4u * a) ^ 0xe881u;
 \end{lstlisting}
 \end{minipage}\par
-这里的 middle 是右移后截取的 32 位，包含原 challenge 的第 16 至 47 位。逐次标出参数后，三个函数的关系才清楚；只看 helper 名称很容易把先后顺序写反。
+这样，观察到的返回值就成为公式的一个验证样本。求解函数对新的 challenge 重新形成三个量，再计算 a 和 b。seed 43 的运行通过了原程序检查，结果见图\ref{fig:p1}。
 
-\stage{实现与换 seed 验证}
-将结果交给 \code{write_answer} 输出。公开测试为 10/10；seed 43 得到 2034676901，实际运行结果见图\ref{fig:p1}。进一步测试覆盖了全零、全一、上下半字和固定随机 challenge。
-\resultfig{assets/report/phase1_seed43.png}{第 1 关，seed 43 的实际终端输出渲染}{fig:p1}
+本关使我认识到，理解函数调用需要追踪值在调用之间怎样传递。helper 的局部计算与调用者组织这些计算的方式共同决定最终结果。
+\resultfig{assets/report/phase1_seed43.png}{第 1 关在 seed 43 下的验证结果}{fig:p1}
 
-\subsection{第 2 关：从首项开始，逐轮恢复数组}
+\subsection{第 2 关：递推关系}
 
-\stage{第一次：六个零为什么失败}
-格式检查和 \code{sscanf} 都要求六个整数，栈上六项从 \code{rbp-0x40} 开始，每项占 4 字节。先输入六个零，在 \code{0x40216a} 的比较处观察到：\code{esi=0}，\code{eax=14}。这说明程序已经读完输入，失败发生在首项比较。
+本关读取六个整数，随后逐项比较。输入六个零后，首项比较处的输入值仍为 0。程序在同一位置算出的期望值则是 14。这一反馈把问题缩小到了首项的生成方式，后五项暂时还没有参与当前失败。
 
-首项比较前只有三步：
+首项比较前的运算很短：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 shr $0xa,%rax
@@ -135,10 +135,9 @@ and $0x1f,%eax
 add $0x7,%eax
 \end{lstlisting}
 \end{minipage}\par
-右移 10 位后保留低 5 位，再加 7，得到
-\code{values[0]=((challenge>>10)&31)+7}。seed 42 的首项为 14，seed 43 为 29。只补上首项后，程序能到达循环入口，随后在第二项失败。
+由此得到 \(v_0=((c\gg10)\mathbin{\&}31)+7\)。右移确定所取位段的位置，掩码保留其中五位。这个解释在 seed 42 下给出 14，在 seed 43 下给出 29。补对首项使程序进入了循环。新的失败发生在第二项比较。于是可以把首项关系和后续递推分开研究。
 
-\stage{第二次：只观察第一轮}
+循环第一轮的主要指令为：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 lea 0x7(%rdx),%ecx
@@ -151,53 +150,42 @@ lea (%rax,%rax,2),%eax
 cmp %eax,%esi
 \end{lstlisting}
 \end{minipage}\par
-第一轮 \code{edx=1}，移位量为 8。一个容易读乱的地方是 \code{esi}：执行 \code{xor} 时它保存前一项，后面的 \code{mov} 才把当前输入装进来。\code{lea} 中的比例寻址在这里计算三倍。
+第一轮下标为 1，移位量因而是 8。seed 42 中的计算对应于 $3((15+1)\oplus14)=90$。
 
-为核对运算符，设置“把异或读成加法”的对照。seed 42 中 \(16\mathbin{\oplus}14=16+14=30\)，两种解释都会算出第二项 90；换 seed 43 后，两者分开了：
+这里存在一个会误导数值推断的巧合：16 与 14 的二进制表示没有重叠的 1，因此二者相加和异或恰好同为 30。如果只观察这一轮的结果，“先相加再乘 3”也能解释 90。我把加法关系写成一个对照版本，用 seed 43 检验它。
+
+新的前项是 29，片段加上下标后为 9。9 与 29 存在重叠的 1。加法会在这些位置产生进位，异或则会抵消对应位。对照版本因而算出第二项 114，与原程序期望的 60 出现差别。
 \begin{center}\small
-\begin{tabular}{c|rrrr|rr}
-seed & 前项 & 片段 & 片段加 1 & 异或结果 & 正确第二项 & 加法对照\\\hline
-42 & 14 & 15 & 16 & 30 & 90 & 90\\
-43 & 29 & 8 & 9 & 20 & 60 & 114
+\begin{tabular}{c|rr|rr}
+seed & 前项 & 片段加下标 & 异或后乘 3 & 加法后乘 3\\\hline
+42 & 14 & 16 & 90 & 90\\
+43 & 29 & 9 & 60 & 114
 \end{tabular}
 \end{center}
-输入 \code{29 114 0 0 0 0} 时，GDB 显示期望为 60、实际输入为 114；改成 \code{29 60 0 0 0 0} 后，程序进入下一轮。这个对照是分析时特意设置的错误版本。
+输入第二项 114 时，失败发生在这一项的比较；改成 60 后，程序进入下一轮。这个结果排除了加法解释。这个反例体现了换输入的作用：让原本难以区分的解释产生不同预测。
 
-\stage{第三次：再看第二轮，推广循环}
-seed 42 在 \code{i=2} 时，前项已经变成 90；移位量为 9，取到片段 15，计算
+运算符确定以后，还需要解释 \code{esi} 在循环中的含义。执行 \code{xor} 时，它保存已经比较通过的前项；随后的 \code{mov} 才将当前输入读入同一个寄存器。当本轮通过并进入下一轮时，当前项自然成为新的前项。
+
+我用 seed 42 的第三项继续核对。第二轮中的前项已经是 90。该轮移位量变成 9，取出的片段仍是 15。于是
 \[
-(15+2)\mathbin{\oplus}90=75,\qquad 3\times75=225.
+(15+2)\oplus90=75,\qquad 3\times75=225.
 \]
-于是恢复出：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-values[0] = (uint32_t)((challenge >> 10) & 31u) + 7u;
-for (unsigned i = 1; i < 6; ++i) {
-    uint32_t part = (uint32_t)((challenge >> (i + 7)) & 15u);
-    values[i] = (values[i - 1] ^ (part + i)) * 3u;
-}
-\end{lstlisting}
-\end{minipage}\par
-循环处理下标 1 至 5，首项加上五次递推恰好得到六项。各轮取出的 4 位片段存在重叠。seed 42 的完整口令为 \code{14 90 225 705 2130 6420}；seed 43 得到图\ref{fig:p2}中的结果。公开测试为 10/10。
-\resultfig{assets/report/phase2_seed43.png}{第 2 关，seed 43 的实际终端输出渲染}{fig:p2}
+这与原程序对第三项的期望一致，支持“每轮依赖紧邻前项”的判断。
 
-\subsection{第 3 关：索引和 helper 编号的区别}
+最终关系为
+\[
+v_0=((c\gg10)\mathbin{\&}31)+7,\qquad
+v_i=3\bigl(v_{i-1}\oplus(p_i+i)\bigr),\quad
+p_i=(c\gg(i+7))\mathbin{\&}15.
+\]
+下标从 1 到 5，恰好生成首项以外的五项。相邻轮次的移位量只增加一位，因此取出的位段会重叠。代码按这个关系直接递推，seed 43 的完整结果见图\ref{fig:p2}。本关的主要收获是把“某个值对得上”与“对产生这个值的机制理解正确”区分开来。
+\resultfig{assets/report/phase2_seed43.png}{第 2 关在 seed 43 下的验证结果}{fig:p2}
 
-\stage{先确定两项输入}
-\code{phase_03} 读两个整数，第一项与 \code{challenge&7} 比较。第二项由下面的参数调用 dispatcher 后得到：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-shr $0x3,%rax
-shr $0x20,%rsi
-xor %eax,%esi
-call p3_dispatch
-\end{lstlisting}
-\end{minipage}\par
-令 \code{index=challenge&7}，
-\code{x=(uint32_t)(challenge>>3) ^ (uint32_t)(challenge>>32)}。
+\subsection{第 3 关：跳转表}
 
-\stage{读取跳转表并做对照}
-dispatcher 中的关键指令是：
+本关有两项输入。第一项与 challenge 的低三位比较，因而可以先恢复出索引。第二项来自 dispatcher。函数名中的 case 编号能否直接对应输入索引，仍需要进一步判断。
+
+dispatcher 中真正决定分支的是间接跳转：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 cmp $0x7,%eax
@@ -205,39 +193,37 @@ ja  <out_of_range>
 notrack jmp *0x405820(,%rax,8)
 \end{lstlisting}
 \end{minipage}\par
-用 \code{x/8gx 0x405820} 读取八项地址，再跟到各地址的跳转目标。表的实际顺序为 case6、case7、case2、case0、case1、case5、case3、case4。
+比例 8 表示每个表项保存一个 64 位目标地址。读取表项并跟到目标后，发现索引 0 实际进入 case6。这使我重新区分了函数标签和选择关系：标签帮助识别代码块，输入索引则通过表项决定执行哪一块。
 
-用 challenge 0 检验“索引 0 对应 case0”的解释：它会给出 \code{0 19859}，实际运行失败。GDB 中 dispatcher 返回 34764，按表映射得到的 \code{0 34764} 则通过。函数编号和输入索引在这份炸弹中有一层映射。
+为了单独检验映射，我选择 challenge 0。此时参与分支计算的参数也为 0，运算中的变量影响被消去。如果按“索引 0 对应 case0”计算，会得到第二项 19859；实际试验失败。按表项选择 case6 后得到 34764，同一输入条件下运行通过。这个对照将失败原因指向了分支映射，参数计算则在两次试验中保持相同。
 
-\stage{恢复八个分支}
+令
+\[
+i=c\mathbin{\&}7,\qquad
+x=\operatorname{low}_{32}(c\gg3)\oplus\operatorname{high}_{32}(c),
+\]
+各分支恢复为下表。表中的常量来自相应 helper 的立即数。
 \begin{center}\small
 \begin{tabular}{ccl}
-索引 & 目标 & 第二项的计算\\\hline
+索引 & 目标 & 第二项\\\hline
 0 & case6 & \code{(x ^ 0x87ccu) + (x >> 2)}\\
-1 & case7 & \code{5u * x + 0x49160u}\\
-2 & case2 & \code{5u * x + 0x9a24u}\\
+1 & case7 & \code{5u*x + 0x49160u}\\
+2 & case2 & \code{5u*x + 0x9a24u}\\
 3 & case0 & \code{(x ^ 0x4d93u) + (x >> 2)}\\
-4 & case1 & \code{5u * x + 0xb829u}\\
-5 & case5 & \code{3u * x + 0xfe6au}\\
-6 & case3 & \code{(4u * x) ^ 0x833du}\\
-7 & case4 & \code{(2u * x) ^ 0x1105u}
+4 & case1 & \code{5u*x + 0xb829u}\\
+5 & case5 & \code{3u*x + 0xfe6au}\\
+6 & case3 & \code{(4u*x) ^ 0x833du}\\
+7 & case4 & \code{(2u*x) ^ 0x1105u}
 \end{tabular}
 \end{center}
-实现保留了八个显式 \code{case}，便于和表逐项对应。公开测试为 10/10，另用八种索引及带高位数据的样本核对了各分支。seed 43 的口令为 \code{7 3149956987}。
-\resultfig{assets/report/phase3_seed43.png}{第 3 关，seed 43 的实际终端输出渲染}{fig:p3}
+实现中的 switch 按索引组织，每一项使用表中确定的 helper 关系。额外测试分别覆盖八种索引；seed 43 的验证结果见图\ref{fig:p3}。本关中的跳转依据提供了分支选择关系。恢复这层关系以后，各代码块的计算才能与输入索引正确对应。
+\resultfig{assets/report/phase3_seed43.png}{第 3 关在 seed 43 下的验证结果}{fig:p3}
 
-\subsection{第 4 关：从基本情况到递归回溯}
+\subsection{第 4 关：递归返回}
 
-\stage{第一次：先让目标恰好等于中点}
-本关读一个整数。\code{p4_walk} 的参数为：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-target = challenge & 127;
-low = 0; high = 127;
-salt = (uint32_t)(challenge >> 7) ^ (uint32_t)(challenge >> 32);
-\end{lstlisting}
-\end{minipage}\par
-取 challenge 63，目标正好等于首次中点，salt 为 0。先输入目标值 63，结果失败；在函数入口执行 \code{finish} 后，\code{eax=311}，对应汇编：
+从 \code{p4_walk} 的区间参数和中点比较，可以判断它具有二分查找的结构。初步的疑问是：返回值是否就是找到的目标，还是还记录了搜索路径的信息？长路径会把两种影响混在一起。我因而先构造立即命中中点的情况。
+
+目标为 challenge 的低七位，初始区间是 0 至 127。challenge 63 的目标等于首次中点，其 salt 参数也恰好为 0。输入目标值 63 仍然失败，而函数的返回值是 311。基本分支的指令解释了两者的差别：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 lea 0xf8(%rdi),%eax
@@ -245,47 +231,37 @@ xor %ecx,%eax
 ret
 \end{lstlisting}
 \end{minipage}\par
-因此基本情况返回 \code{(mid+248)^salt}。补成 311 后，这个样本通过。
+它在中点上加 248，再与 salt 异或。因此，即使命中目标也要形成一个新的值。将输入改为 311 后，最短路径的试验通过。这一反馈支持了对基本情况的解释。
 
-\stage{第二次：只走一次左分支}
-取 challenge 31，调用区间依次为 \([0,127]\)、\([0,62]\)。子调用命中中点，第一次 \code{finish} 看到返回 279；回到父调用再执行 \code{finish}，结果为 886。父调用返回前的指令为：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-call p4_walk
-lea (%rax,%rax,2),%eax
-xor %ebx,%eax
-...
-xor $0xc,%eax
-\end{lstlisting}
-\end{minipage}\par
-其中 \code{ebx=mid+salt}。右分支的最后一个常量是 \code{0xa}。这说明递归的路径影响回溯时的加工过程。
+接下来需要判断上层是否直接传递子调用结果。我取 challenge 31，使搜索只经过一层左分支。子调用在区间 \([0,62]\) 命中 31 并返回 279。但回到外层以后，整个函数的返回值变成了 886。这个差别说明，求解时还要计算回溯阶段。
 
-\stage{递归关系与验证}
-令 \(m=l+\lfloor(h-l)/2\rfloor\)，则返回关系可写为：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-if (target == mid)
-    return (mid + 248u) ^ salt;
-if (target < mid) {
-    value = phase4_walk(target, low, mid - 1u, salt);
-    return (3u * value) ^ (mid + salt) ^ 12u;
-}
-value = phase4_walk(target, mid + 1u, high, salt);
-return (3u * value) ^ (mid + salt) ^ 10u;
-\end{lstlisting}
-\end{minipage}\par
-实现保持递归形式，与 GDB 调用栈对应。目标范围为 0 至 127，测试额外覆盖全部 128 种目标；公开测试为 10/10。seed 43 返回 3949797497。
-\resultfig{assets/report/phase4_seed43.png}{第 4 关，seed 43 的实际终端输出渲染}{fig:p4}
+父调用在递归前保存了当前中点与 salt 的和。\code{lea} 在递归返回后将子调用结果乘 3。随后两次异或分别加入了保存值和左分支常量 12。本次试验对应的计算是 $837\oplus63\oplus12=886$，其中 $837=3\times279$。右分支具有相同结构，最后的常量改为 10。
 
-\subsection{第 5 关：先处理头节点，再沿 next 遍历}
-
-\stage{第一次读取时的宽度问题}
-本关读两个整数，\code{p5_traverse} 通过 \code{eax} 返回第一项，通过第二个指针参数写回另一项。读取起点表时，开始用了 \code{x/8uw}，输出中出现了指针低半部和一串零；回看索引比例 \code{8}，才发现这只读了四个 64 位指针。改成 \code{x/8gx} 后，完整八项起点对应节点下标
+令中点 \(m=l+\lfloor(h-l)/2\rfloor\)，递归关系为
 \[
-5,\ 8,\ 3,\ 1,\ 9,\ 11,\ 0,\ 7.
+F(t,l,h,s)=
+\begin{cases}
+(m+248)\oplus s,&t=m,\\
+3F(t,l,m-1,s)\oplus(m+s)\oplus12,&t<m,\\
+3F(t,m+1,h,s)\oplus(m+s)\oplus10,&t>m.
+\end{cases}
+\]
+其中
+\[
+t=c\mathbin{\&}127,\qquad
+s=\operatorname{low}_{32}(c\gg7)\oplus\operatorname{high}_{32}(c).
 \]
 
-\stage{由访问偏移恢复布局}
+这一关系解释了为什么最终结果与整条搜索路径有关。基本分支给出最内层结果，每一层返回时又加入该层中点的信息。代码因而保留递归写法，便于对应这种依赖。
+
+测试覆盖了全部 128 种目标，seed 43 的结果见图\ref{fig:p4}。本关让我把递归区分成进入下一层和从下一层返回两个方向；只理解区间怎样缩小，还不足以恢复整个函数。
+\resultfig{assets/report/phase4_seed43.png}{第 4 关在 seed 43 下的验证结果}{fig:p4}
+
+\subsection{第 5 关：链表遍历}
+
+本关检查两项输入。遍历函数通过返回值给出第一项，通过指针参数写回第二项。这使我首先关注：除了某种累计计算，遍历是否还需要留下末尾节点的信息？
+
+函数从起点表取出一个指针，随后访问节点内的固定偏移：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 mov 0x405b60(,%rax,8),%rdx
@@ -295,44 +271,47 @@ add 0xc(%rdx),%eax
 mov (%rdx),%rdx
 \end{lstlisting}
 \end{minipage}\par
-节点的 +0 处是 8 字节 next 指针，+8 是 4 字节 id，+12 是 4 字节 bias，每个节点共 16 字节。按 next 指针得到的完整链为：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-5 -> 8 -> 3 -> 1 -> 9 -> 11 -> 0 -> 7 -> 10 -> 2 -> 6 -> 4 -> NULL
-\end{lstlisting}
-\end{minipage}\par
-静态节点的存储顺序和遍历顺序由此区分开来。
+首个字段随后作为新地址使用，因而可以解释为 next 指针。另两个字段参与算术或被写回输出，宽度都是 4 字节。由此恢复出一个 16 字节节点：前 8 字节保存 next，后面依次是 id 和 bias。
 
-\stage{第二次：用两个相邻 challenge 核对处理次数}
-challenge 0 选中起点 nodes[5]，额外跳转数为 0。观察到节点字段为 id=1049、bias=5848，函数仍先处理它，得到 \code{95042 1049}。
-将 challenge 改为 8，起点相同、额外跳转数变成 1。沿用原答案会失败；单步执行 \lstinline|mov (%rdx),%rdx| 后，指针进入 nodes[8]，字段为 id=55、bias=37381，最终得到 \code{322556 55}。额外跳转数和总处理数相差一轮。
+我最初将 \code{x/8uw} 的输出理解成八个指针。实际上 w 的单位是 4 字节，读到的零只是若干指针的高半部分。改用 8 字节单位后，才读全八个起点。这个错误的原因在于把“显示几个单元”和“显示几个对象”混为一谈。
 
-\stage{恢复遍历关系}
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-value = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32);
-value ^= 0x7581u;
-count = ((challenge >> 3) & 3u) + 1u;
-for (unsigned i = 0; i < count; ++i) {
-    value = (3u * value + node->bias) ^ node->id;
-    last = node->id;
-    node = node->next;
-}
-\end{lstlisting}
-\end{minipage}\par
-输出为累计值和最后处理节点的 id。代码中的静态节点表来自本包数据，运行时仍依据 challenge 选择起点和长度。公开测试为 10/10，另覆盖八个起点与四种长度的全部组合。seed 43 的结果见图\ref{fig:p5}。
-\resultfig{assets/report/phase5_seed43.png}{第 5 关，seed 43 的实际终端输出渲染}{fig:p5}
+继续跟随 next 后，看到相邻处理的节点并不按数组下标递增。例如第一个起点落在 nodes[5]，它的 next 指向 nodes[8]。求解程序因而需要保留静态节点之间的链接关系。遍历顺序由 next 指针决定。
 
-\subsection{第 6 关：两次间接调用之间的数据传递}
+处理次数还有一个疑点：从 challenge 得到的两位字段应当怎样解释？它可能表示总处理数，也可能只表示额外前进的次数。我先取 challenge 0，它给出的该字段为 0。直接把这个字段当作循环次数会跳过全部节点。但实际函数已经完成一次累计更新，写回的 id 为 1049。这说明首节点在循环之前就参与了计算。
 
-\stage{先纠正输入数量和表长}
-沿用上一关的 \code{0 0} 试探输入时，程序还没到 \code{p6_dispatch} 就失败。回看入口，格式检查要求一个整数。改为 \code{0} 后，能停在 dispatcher 的第一次调用处。
+为了进一步区分两种解释，我把 challenge 改为 8。这次低三位保持不变，起点因而相同。用于累计初值的移位结果也相同。发生变化的只有控制长度的字段。这样，输出变化就可以归因于处理长度。
 
-另一个起初读少的地方是函数表：虽然只有六个不同的 op 函数，索引却取三位，表中实际有八项。用 \code{x/8gx 0x405e00} 读到的顺序为
-\code{op1, op5, op4, op0, op4, op3, op2, op3}。
+沿用原来的答案会失败。单步跟随 next 后，看到新节点的 id=55、bias=37381。将新节点纳入第二次更新后，累计值变成 322556。写回的 id 同时变成了 55。新的两项答案通过了检查。这一反馈同时确定了长度的含义和第二项输出的含义：它保存最后处理节点的 id。
 
-\stage{区分循环移位与普通右移}
-取 challenge 67，第一次索引为 3，参数为 1，间接调用落到 \code{p6_op_0}。执行 \code{finish} 得到 \code{0x80000000}，由此核对 \code{ror} 把低位补回到高位。六个操作恢复如下：
+累计初值为
+\[
+v=\operatorname{low}_{32}(c\gg6)\oplus
+  \operatorname{high}_{32}(c)\oplus\mathrm{0x7581}.
+\]
+起点由低三位选择。令 \(k=(c\gg3)\mathbin{\&}3\)，则总共处理 \(k+1\) 个节点。每个节点的更新为
+\[
+v\leftarrow(3v+\mathrm{bias})\oplus\mathrm{id}.
+\]
+代码用一个循环统一包含首节点，每轮同时更新末尾 id。测试分别组合八个起点和四种长度，seed 43 的结果见图\ref{fig:p5}。
+
+本关中，长度字段的值只有结合循环前的操作才有完整含义。若只盯着循环内部，很容易把首节点漏掉。选用起点和初值都相同的对照输入，则使这个边界问题变得清楚。
+\resultfig{assets/report/phase5_seed43.png}{第 5 关在 seed 43 下的验证结果}{fig:p5}
+
+\subsection{第 6 关：间接调用}
+
+本关入口要求一个整数字段。此前沿用双整数占位输入会在进入 dispatcher 以前失败。纠正数量后，才能观察实际计算。dispatcher 有两次间接调用。第一步需要确定它们各自的目标，随后才能分析第一次返回值如何成为第二次的参数。
+
+函数表具有八项，但其中只有六个不同的目标。这说明选择值的范围与不同函数的数量并不相同。恢复出的表为：
+\begin{center}\small
+\begin{tabular}{c|cccccccc}
+索引 & 0 & 1 & 2 & 3 & 4 & 5 & 6 & 7\\\hline
+目标 & op1 & op5 & op4 & op0 & op4 & op3 & op2 & op3
+\end{tabular}
+\end{center}
+
+有一个目标只对参数执行 \code{ror}。challenge 67 会选中这个函数，并使第一次调用的参数为 1。若只将它理解成普通右移，结果应为 0；实际返回的是 \(2^{31}\)。这说明原最低位被移到了最高位，必须按 32 位循环右移解释。
+
+这个样本把“移出位被丢弃”和“移出位被补回”两种理解分开。其余目标也按各自指令恢复为：
 \begin{center}\small
 \begin{tabular}{cl}
 函数 & 32 位计算关系\\\hline
@@ -345,7 +324,7 @@ op5 & \code{(x ^ 0xf6bcu) + (x << 7)}
 \end{tabular}
 \end{center}
 
-\stage{再跟第二次调用}
+challenge 0 的第一次调用返回 50156。直接将它作为答案，程序仍然失败。调用者会先将第一次结果与常量异或。这个新值成为第二函数的参数，其返回值还参与了末尾加法。
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 call *0x405e00(,%rax,8)
@@ -355,38 +334,26 @@ call *0x405e00(%rbx)
 add $0x671c,%eax
 \end{lstlisting}
 \end{minipage}\par
-challenge 0 的第一返回值是 50156，直接输入它会失败。继续观察，第二函数接收 \code{0x40ce}，返回 32810；最后再加 \code{0x671c}，得到 59206。因此完整顺序为：
+同一样本中第二函数返回 32810。末尾加法进一步得到最终结果 59206。由此，失败的原因可以解释为只完成了组合计算的第一部分。
+
+设初值 \(x=\operatorname{low}_{32}(c\gg6)\oplus\operatorname{high}_{32}(c)\)，两个索引分别为 \(i=c\mathbin{\&}7\) 和 \(j=(c\gg3)\mathbin{\&}7\)，完整关系为
+\[
+F(c)=O_j\bigl(O_i(x)\oplus\mathrm{0x8322}\bigr)+\mathrm{0x671c}.
+\]
+这里 \(O_i\) 表示表中第 i 项选中的操作。实现保留函数指针表，使两次调用的关系在代码中直接可见。
+
+额外测试覆盖了两次索引的全部组合，seed 43 的结果见图\ref{fig:p6}。本关的关键是同时理解被调用函数和调用者：局部操作确定怎样算，调用者决定这些操作怎样连接。
+\resultfig{assets/report/phase6_seed43.png}{第 6 关在 seed 43 下的验证结果}{fig:p6}
+
+\section{Honor 分析}
+
+\subsection{输入布局}
+
+六关通过后，程序继续读取第七行。输入 \code{test} 能到达 \code{secret_gate}，但很快返回失败。此时若直接猜数字关系，就会研究一个尚未真正执行的条件。因此，我先判断原输入经过了哪些处理。
+
+长度检查对 \code{strlen-36} 作无符号比较，对应可接受的长度区间为 36 至 163。后面的复制和固定位置比较表明，输入中还包含一个标志字段。比较位置距离复制起点 32 字节，其后 4 字节才是交给 \code{secret_phase} 的子串：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
-x = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32);
-x = ops[challenge & 7u](x);
-x ^= 0x8322u;
-x = ops[(challenge >> 3) & 7u](x);
-answer = x + 0x671cu;
-\end{lstlisting}
-\end{minipage}\par
-实现使用六个小函数和八项函数指针表。公开测试为 10/10，额外覆盖八乘八索引组合及高低位旋转样本。seed 43 输出 591440785。
-\resultfig{assets/report/phase6_seed43.png}{第 6 关，seed 43 的实际终端输出渲染}{fig:p6}
-
-\clearpage
-\section{Honor：从字符串布局到三个整数}
-
-\subsection{先进入 secret\_gate，再确定标志位置}
-
-把六关正确口令作为前缀，再附加一行 \code{test}，可以停在 \code{secret_gate}。seed 42 下观察到：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-challenge = 0xccf635ee9e9e2fa4
-context   = 0x5d8b1809d64489a0
-\end{lstlisting}
-\end{minipage}\par
-此时函数返回 0。先从长度检查和三个栈地址看起：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-sub $0x24,%rax
-cmp $0x7f,%rax
-jbe <copy>
-...
 lea -0xd0(%rbp),%r12
 ...
 cmpl $0x4e45504f,-0xb0(%rbp)
@@ -394,32 +361,15 @@ lea -0xac(%rbp),%rdi
 call secret_phase
 \end{lstlisting}
 \end{minipage}\par
-\code{strlen-36} 的无符号比较给出长度区间 36 至 163。复制起点到标志位置相距 32 字节，标志到数字子串又相距 4 字节。小端内存中的 \code{0x4e45504f} 对应字符串 \code{OPEN}，布局为：
-\begin{center}
-\begin{tabular}{ccl}
-相对起点偏移 & 长度 & 内容\\\hline
-0--31 & 32 字节 & 填充字符 A\\
-32--35 & 4 字节 & OPEN\\
-36 起 & 随数字长度变化 & 三个无符号十进制整数
-\end{tabular}
-\end{center}
+把比较常量按小端字节解释，得到 \code{OPEN}。这使我能够按后续访问的用途确定各字段的位置。
 
-用 31 个 A 加 \code{OPEN0 0 0} 做偏移对照，检查处读到 \code{0x304e4550}，即错位的 \code{PEN0}；换成 32 个 A 后，检查值成为 \code{0x4e45504f}，并进入 \code{secret_phase}，其 \code{rdi} 指向的内容恰为 \code{0 0 0}。这个试验把标志检查和数字检查分开了。
+为了核对位置，我对比了 31 个和 32 个填充字符。前一种输入在标志处读到错位的 \code{PEN0}，未进入数字检查。后一种输入能进入 \code{secret_phase}；此时函数看到的内容恰好是 \code{0 0 0}。32 字节填充把标志放到了指定字段。其后的数字文本因而能够交给下一层函数处理。
 
-\subsection{只修正第二个整数，再定位第三个}
+\subsection{数值关系}
 
-数字检查先将 \code{context&3} 与第一项比较。seed 42 对应 0，所以三个零已经能通过这一项。继续停在 \code{0x4026ec}，观察第二项比较。中间 helper 为：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-secret_mix:
-    mov %edi,%eax
-    ror $0x5,%eax
-    xor $0xf159,%eax
-    ret
-\end{lstlisting}
-\end{minipage}\par
-将 challenge 与 context 分别按高低 32 位异或折叠为 \(a,b\)，令
-\(m=\mathrm{context}\mathbin{\&}3\)，得到：
+数字后缀包含三个整数。第一个整数只与 context 的低两位比较；另外两个整数同时依赖 challenge 和 context。由于 context 来自本次六关的口令，恢复公式时需要把它作为独立输入看待。
+
+seed 42 中的第一项期望为 0，初始的三个零已经通过这一项。程序随后在第二项失败，说明字符串布局与第一项条件已经满足。继续观察第二项的计算，得到下面的关系：
 \par\noindent\begin{minipage}{\linewidth}
 \begin{lstlisting}
 mode = (uint32_t)(context & 3u);
@@ -433,71 +383,49 @@ second = first ^ (b + mode + 0x9bc7u + (a >> 5));
 \end{lstlisting}
 \end{minipage}\par
 
-GDB 观察到 \(a=1382554186\)、\(b=2345636265\)，期望第二项为 113515330。先只填 \code{OPEN0 113515330 0}，程序继续失败；这次能到达第三项比较 \code{0x402700}，看到期望值 2292675840。补上后，seed 42 正常输出 \code{Secret phase defused.}。
+这里 a 和 b 分别折叠了两个 64 位输入的高低半部。\code{secret_mix} 对二者异或后的值循环右移五位，再与常量异或。调用者又加入 context 中间位段的影响，形成第二项 first。
 
-这里最容易漏读的是 \code{context>>16}：随后截为 32 位，使用的是原 context 的第 16 至 47 位。第二、三项的异或和求和也都按 32 位计算。
+我用恢复出的关系补上 first，同时保持最后一项为零。这次第二项比较通过，失败位置移到了第三项。因而新的失败提供了两层信息：前面的计算已经得到原程序认可，剩余问题位于 first 返回之后。继续解释末尾求和与异或，得到 second 的关系。补齐后，seed 42 的完整运行通过 Honor。
 
-\subsection{通用输出与换 seed 核对}
+在这一步中，\code{context>>16} 的宽度尤其重要。右移以后仍会截取 32 位，因此使用的是原数的第 16 至 47 位。若将它只理解为高 16 位，第二项就会遗漏输入的一部分影响。
 
-最终将 32 个 A、\code{OPEN} 和三个动态整数拼成一行。seed 43 的 mode 为 1，生成的第七行为：
-\par\noindent\begin{minipage}{\linewidth}
-\begin{lstlisting}
-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOPEN1 2319039455 4233664519
-\end{lstlisting}
-\end{minipage}\par
-图\ref{fig:honor}来自六关加 Honor 的一次完整运行。Honor 公开测试为 10/10；额外 20 个公开列表之外的 seed 全部通过，并覆盖 mode 0、1、2、3。
-\resultfig{assets/report/honor_seed43.png}{六关及 Honor，seed 43 的实际终端输出渲染}{fig:honor}
 
-\clearpage
-\section{测试结果与过程核对}
 
-\subsection{公开测试与列表外验证}
+seed 42 的 mode 恰好为 0，这意味着该样本中 mode 乘常量的部分也为 0。漏写这一部分也可能得到相同结果。完成这个样本后，仍需用不同 mode 的输入检查公式。
 
-本报告整理时重新运行 \code{python3 public_test.py}，六关为 60/60，Honor 为 10/10，见图\ref{fig:public}。各节的 seed 43 运行图对应同一份最终 \code{defuser.c}。
+seed 43 的 mode 变成 1，其运行通过结果见图\ref{fig:honor}。进一步使用的 20 个列表外 seed 覆盖了四种 mode，完整输出均通过原程序检查。这样的验证针对的是公式中尚未在初始样本中发挥作用的分量。
+
+Honor 的分析也使我重新理解失败的含义。入口处失败只能反映长度或标志条件；数字检查处失败才与后缀公式有关。当失败位置随着局部修正向后移动时，这种移动本身就能为已经恢复的部分提供证据。
+\resultfig{assets/report/honor_seed43.png}{seed 43 下六关与 Honor 的完整验证结果}{fig:honor}
+
+\section{验证与复盘}
+
+
+
+最终求解程序通过六关公开测试，共计 60/60；Honor 公开测试为 10/10。每关还以公开列表之外的 seed 43 单独验证，运行结果已放在相应分析之后。额外测试所针对的疑点见下表。
 \begin{center}\small
-\begin{tabular}{ccl}
-关卡 & 公开测试 & 额外覆盖的主要情况\\\hline
-1 & 10/10 & 全零、全一、上下半字及随机 challenge\\
-2 & 10/10 & 首项位段、逐轮移位、额外 seed\\
-3 & 10/10 & 八种索引和带高位数据的分支输入\\
-4 & 10/10 & 0 至 127 的全部目标、左右递归\\
-5 & 10/10 & 八个起点与四种处理长度\\
-6 & 10/10 & 八乘八函数索引、循环移位的补回位\\
-Honor & 10/10 & 额外 20 个 seed、四种 mode
-\end{tabular}
+\begin{tabularx}{\linewidth}{c c X}
+关卡 & 公开测试 & 额外测试针对的问题\\\hline
+1 & 10/10 & 高半部变化后，helper 参数关系是否仍成立\\
+2 & 10/10 & 首项取值改变后，递推解释是否仍与原程序一致\\
+3 & 10/10 & 每一种索引是否都对应正确分支\\
+4 & 10/10 & 全部目标位置能否按恢复的返回关系计算\\
+5 & 10/10 & 起点与处理长度改变后，末尾 id 是否随遍历更新\\
+6 & 10/10 & 两次选择值组合后，函数连接关系是否仍成立\\
+Honor & 10/10 & mode 改变时，context 相关的计算是否仍正确
+\end{tabularx}
 \end{center}
-Honor 额外 seed 为 2、3、4、5、6、8、9、10、11、12、13、14、15、16、17、18、43、
-3141592653、9223372036854775808 和 18446744073709551614。这些输入均不在公开列表中，实际输出行长为 57 至 59 字符。
-\resultfig{assets/report/public_tests.png}{公开测试的统计行与 Honor 明细，实际终端输出渲染}{fig:public}
-图中的文字由实际执行命令的输出渲染；统计图保留了六关总数和 Honor 明细。各关的完整过程输出保存在父目录 \code{try.md}。
+\resultfig{assets/report/public_tests.png}{公开测试结果}{fig:public}
 
-\subsection{环境问题与复编方法}
 
-初次直接在 \code{/oss-ipec} 目录链接时，出现 \code{file truncated}。把同一份源码、编译器和选项改为向 \code{/tmp} 输出后，链接成功；完成的 ELF 文件顺序复制回 \code{BombLab/defuser} 后也能运行。结合 \code{df -T} 中 ossfs2 与 ext4 的差别，本次后续复编使用临时目录生成二进制的方式。
 
-此外，领取脚本最初遭遇 \code{ConnectionResetError}。现有代理下，curl 可以下载附件，随后通过原脚本的 \code{--file} 入口完成导入。这两类问题分别发生在构建和下载阶段，与口令公式的核对分开处理。
+第二关最能体现这次实验中的认识变化。加法解释和异或解释对 seed 42 具有相同预测。单次通过因而无法帮助我作出选择。seed 43 中重叠的二进制位使两个结果不同，错误解释由此暴露出来。这使我在选择测试输入时开始关注它能回答的问题。一个有作用的试验应当使不同解释产生能够观察到的差别。
 
-\subsection{按关记录的提交}
+第四关则让我注意到，观察到的值还需要放回调用层次中解释。子调用的 279 和整体函数的 886 都是真实结果，但它们属于不同调用层次。若把前者直接当成答案，就会漏掉回溯阶段表达的关系。这种区别也适用于第六关中两次间接调用的返回值。
 
-\begin{center}\small
-\begin{tabular}{cl}
-提交 & 对应内容\\\hline
-\code{0034180} & 第 1 关 helper 调用计算\\
-\code{de0df4a} & 第 2 关数组递推\\
-\code{09ce9eb} & 第 3 关跳转表分支\\
-\code{b965831} & 第 4 关递归回溯\\
-\code{0945dd7} & 第 5 关链表遍历\\
-\code{49baacd} & 第 6 关间接调用\\
-\code{b9596a8} & Honor 字符串与上下文计算
-\end{tabular}
-\end{center}
+本次求解最终形成了与每关检查条件对应的计算关系。局部修正是否消除了原先的矛盾，需要通过反馈判断。改变输入条件以后继续检验解释，才能逐渐确定它的适用范围。报告选取这些反馈，是为了说明公式为什么能够从程序中恢复出来。
 
-\section{实验体会}
-
-第二关给我的印象最深。开始只看到一个错误结果时，很难判断是格式、首项还是循环出了问题。将它拆成“六个零、只补首项、只补第二项、再看下一轮”后，每次失败都对应了更具体的位置。seed 42 中加法与异或的结果碰巧相等，也让我体会到换输入核对中间值的作用。
-
-后面几关沿用这一做法：第三关先读实际跳转地址，第四关分开看子调用与父调用的返回，第五关沿指针而非数组顺序走，第六关跟清两次调用之间的参数，Honor 则先确认字符串布局再算整数。恢复公式时，把位宽、运算顺序和寄存器在当前指令处的含义写清楚，比直接照着某个样本值猜口令更有帮助。
-
+\Needspace{15\baselineskip}
 \section{参考资料}
 
 \begingroup
@@ -508,11 +436,9 @@ Honor 额外 seed 为 2、3、4、5、6、8、9、10、11、12、13、14、15、
 \setlength{\itemsep}{3pt}
 \bibitem{lab}
 课程实验文档：Lab2 BombLab。
-\url{https://ics-26fall-fdu.github.io/labs/lab2-bomb-lab/}，
-访问日期：2026 年 10 月 30 日。
+\url{https://ics-26fall-fdu.github.io/labs/lab2-bomb-lab/}。
 \bibitem{repo}
-实验仓库中的 \code{README.md}、\code{tutor/README.md}、
-\code{teaching/README.md}，以及公开测试的 seed 列表。
+实验仓库的 \code{README.md}。教学目录中的说明用于对照调用约定与观察方法。
 \bibitem{gdbcode}
 GNU GDB Manual：Source and Machine Code。
 \url{https://sourceware.org/gdb/current/onlinedocs/gdb.html/Machine-Code.html}。
@@ -523,7 +449,12 @@ GNU GDB Manual：Examining Memory。
 \endgroup
 
 \section{AI 使用说明}
-% 按用户要求留空，供之后自行填写。
-\vspace*{1.7cm}
+
+\begin{enumerate}
+\item 用于拆解题目并分析题目条件。
+\item 用于解释相关概念，并辅助理解题设。
+\item 针对具体报错分析原因，并解释调试过程中涉及的代码。
+\item 用于编译报告 PDF，并修改报告语言。
+\end{enumerate}
 
 \end{document}
