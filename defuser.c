@@ -87,11 +87,42 @@ int solve_phase_4(uint64_t challenge, char *out, size_t cap) {
 }
 
 int solve_phase_5(uint64_t challenge, char *out, size_t cap) {
+    struct node {
+        const struct node *next;
+        uint32_t id;
+        uint32_t bias;
+    };
+    static const struct node nodes[12] = {
+        {&nodes[7], 2935, 57449},
+        {&nodes[9], 841, 3920},
+        {&nodes[6], 1313, 55132},
+        {&nodes[1], 1555, 62310},
+        {NULL, 280, 1036},
+        {&nodes[8], 1049, 5848},
+        {&nodes[4], 2427, 22857},
+        {&nodes[10], 1918, 10615},
+        {&nodes[3], 55, 37381},
+        {&nodes[11], 2113, 61635},
+        {&nodes[2], 2657, 51936},
+        {&nodes[0], 529, 21879}
+    };
+    static const struct node *const heads[8] = {
+        &nodes[5], &nodes[8], &nodes[3], &nodes[1],
+        &nodes[9], &nodes[11], &nodes[0], &nodes[7]
+    };
     uint32_t values[MAX_FIELDS] = {0};
-    size_t count = 0;
-    (void)challenge;
-    // TODO: 根据 phase_05 的汇编，用 challenge 算出口令中的各个整数，依次存入 values，并把 count 改为整数个数。
-    return write_answer(out, cap, values, count);
+    uint32_t value = (uint32_t)(challenge >> 6) ^ (uint32_t)(challenge >> 32);
+    unsigned count = (unsigned)((challenge >> 3) & 3u) + 1u;
+    const struct node *node = heads[challenge & 7u];
+
+    value ^= 0x7581u;
+    for (unsigned i = 0; i < count; ++i) {
+        value = (3u * value + node->bias) ^ node->id;
+        values[1] = node->id;
+        node = node->next;
+    }
+    values[0] = value;
+    return write_answer(out, cap, values, 2);
 }
 
 int solve_phase_6(uint64_t challenge, char *out, size_t cap) {
